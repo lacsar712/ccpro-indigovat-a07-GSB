@@ -81,6 +81,28 @@
       color: rgba(216, 235, 232, 0.72);
       font-size: 0.92rem;
     }
+    .topnav {
+      display: flex;
+      gap: 0.45rem;
+      align-items: center;
+    }
+    .topnav a {
+      display: inline-block;
+      padding: 0.34rem 0.9rem;
+      border-radius: 999px;
+      border: 1px solid rgba(216, 235, 232, 0.35);
+      color: var(--foam);
+      font-size: 0.86rem;
+      text-decoration: none;
+      background: rgba(11, 28, 44, 0.35);
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .topnav a:hover { border-color: rgba(216, 235, 232, 0.7); }
+    .topnav a.on {
+      background: linear-gradient(135deg, rgba(61, 139, 156, 0.85), rgba(31, 77, 107, 0.95));
+      border-color: rgba(216, 235, 232, 0.65);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);
+    }
     .user-pill {
       display: flex;
       align-items: center;
@@ -291,6 +313,10 @@
         <h1>染缸还原台</h1>
         <p class="sub">IndigoVat · 按缸位盯氧化还原，点开记浸染与改状态</p>
       </div>
+      <nav class="topnav" aria-label="主导航">
+        <a href="/" class="{{ 'on' if active == 'bay' }}">还原台</a>
+        <a href="/caps" class="{{ 'on' if active == 'caps' }}">并发上限</a>
+      </nav>
       <div class="user-pill">
         <span>{{ user.username }}</span>
         <form method="post" action="/logout">

@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}并发上限{% endblock %}
+{% block content %}
+<style>
+  .cap-panel {
+    background: linear-gradient(165deg, rgba(244, 248, 247, 0.97), rgba(232, 242, 240, 0.94));
+    border: 1px solid rgba(31, 77, 107, 0.18);
+    border-radius: 16px;
+    padding: 1.15rem 1.25rem 1.35rem;
+    box-shadow: 0 12px 36px rgba(8, 20, 32, 0.28);
+    color: var(--ink);
+    margin-bottom: 1.1rem;
+  }
+  .cap-panel h2 {
+    margin: 0 0 0.8rem;
+    font-size: 1.15rem;
+    color: var(--indigo-deep);
+  }
+  .cap-create {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.7rem 0.9rem;
+    align-items: end;
+  }
+  .cap-create label { font-size: 0.86rem; color: #2a4554; margin: 0; }
+  .cap-create input, .cap-create select {
+    background: #fff;
+    border-color: #b7cdd0;
+    margin-bottom: 0;
+  }
+  .cap-create .chk {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding-bottom: 0.55rem;
+  }
+  .cap-create .chk input { width: auto; margin: 0; }
+  .cap-create button[type="submit"] {
+    width: auto;
+    background: var(--indigo-mid);
+    border-color: var(--indigo-mid);
+    margin: 0;
+  }
+  table.cap-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    background: transparent;
+  }
+  table.cap-table th, table.cap-table td {
+    padding: 0.5rem 0.55rem;
+    border-bottom: 1px solid #d3e0de;
+    text-align: left;
+    vertical-align: middle;
+  }
+  table.cap-table th {
+    color: #1f4d6b;
+    font-size: 0.84rem;
+    letter-spacing: 0.03em;
+  }
+  .cap-state {
+    display: inline-block;
+    padding: 0.12rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.78rem;
+  }
+  .cap-state.on { background: #d9f0e6; color: #14604a; }
+  .cap-state.off { background: #e3e8ea; color: #5a6a72; }
+  .cap-state.pending { background: #fdf0d8; color: #8a6116; }
+  .cap-used { font-variant-numeric: tabular-nums; }
+  .cap-used.full { color: #8b1e1e; font-weight: 650; }
+  .row-actions { display: flex; gap: 0.45rem; align-items: center; flex-wrap: wrap; }
+  .row-actions form { display: flex; gap: 0.4rem; align-items: center; margin: 0; }
+  .row-actions input[type="number"] { width: 4.6rem; margin: 0; padding: 0.25rem 0.4rem; background: #fff; border-color: #b7cdd0; }
+  .row-actions input[type="date"] { width: 9.2rem; margin: 0; padding: 0.25rem 0.4rem; background: #fff; border-color: #b7cdd0; }
+  .row-actions button {
+    width: auto;
+    margin: 0;
+    padding: 0.3rem 0.7rem;
+    font-size: 0.82rem;
+    background: var(--indigo-mid);
+    border-color: var(--indigo-mid);
+  }
+  .row-actions button.ghost {
+    background: transparent;
+    color: var(--indigo-mid);
+    border: 1px solid var(--indigo-mid);
+  }
+  .cap-empty { color: #5a6a72; padding: 0.8rem 0.2rem; }
+</style>
+
+<div class="cap-panel">
+  <h2>新建并发上限卡</h2>
+  {% if error %}
+  <div class="error-box">{{ error }}</div>
+  {% endif %}
+  <form method="post" action="/caps" class="cap-create">
+    <label>工坊
+      <select name="workshop_id" required>
+        {% for w in workshops %}
+        <option value="{{ w.id }}">{{ w.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>染种名
+      <input type="text" name="dyeType" list="dye-types" required placeholder="例如 土靛">
+      <datalist id="dye-types">
+        {% for d in dye_types %}
+        <option value="{{ d }}"></option>
+        {% endfor %}
+      </datalist>
+    </label>
+    <label>最大还原中缸数
+      <input type="number" name="maxReducing" min="1" step="1" value="1" required>
+    </label>
+    <label>生效日起
+      <input type="date" name="effectiveFrom" value="{{ today }}" required>
+    </label>
+    <label class="chk">
+      <input type="checkbox" name="enabled" value="on" checked>
+      是否启用
+    </label>
+    <button type="submit">新建上限卡</button>
+  </form>
+</div>
+
+<div class="cap-panel">
+  <h2>上限卡列表</h2>
+  {% if caps %}
+  <table class="cap-table">
+    <thead>
+      <tr>
+        <th>工坊</th>
+        <th>染种名</th>
+        <th>最大还原中缸数</th>
+        <th>当前占用</th>
+        <th>生效日起</th>
+        <th>是否启用</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in caps %}
+      <tr>
+        <td>{{ c.workshop_name }}</td>
+        <td>{{ c.dyeType }}</td>
+        <td>{{ c.maxReducing }}</td>
+        <td class="cap-used {{ 'full' if c.effective and c.used >= c.maxReducing }}">
+          还原中 {{ c.used }} / {{ c.maxReducing }}
+        </td>
+        <td>{{ c.effectiveFrom }}</td>
+        <td>
+          {% if c.enabled and c.effective %}
+          <span class="cap-state on">启用中</span>
+          {% elif c.enabled %}
+          <span class="cap-state pending">未生效</span>
+          {% else %}
+          <span class="cap-state off">已停用</span>
+          {% endif %}
+        </td>
+        <td>
+          <div class="row-actions">
+            <form method="post" action="/caps/{{ c.id }}/toggle">
+              <button type="submit" class="ghost">{{ '停用' if c.enabled else '启用' }}</button>
+            </form>
+            <form method="post" action="/caps/{{ c.id }}/update">
+              <input type="number" name="maxReducing" min="1" step="1" value="{{ c.maxReducing }}" required>
+              <input type="date" name="effectiveFrom" value="{{ c.effectiveFrom }}" required>
+              <button type="submit">保存</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="cap-empty">暂无上限卡。新建后，同坊同染种改「还原中」的缸数才受放行。</p>
+  {% endif %}
+</div>
+
+<p class="rule-foot">
+  占用按「同坊同染种」计数，只数还原中，可染色不计入；计数与改状态、缸位 chip 占用摘要同源。
+  改启用或改最大数后下一笔判定立即生效；两人同时改还原中时以上限卡行锁互斥，名额不足的一笔将被拒绝。
+</p>
+{% endblock %}

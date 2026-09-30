@@ -1,12 +1,12 @@
 import hashlib
 import hmac
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.models import DipLot, User, Vat, Workshop
+from app.models import DipLot, ReductionCap, User, Vat, Workshop
 
 _PWD_SALT = os.environ.get("PWD_SALT", "indigovat-dev-salt").encode("utf-8")
 
@@ -42,9 +42,13 @@ def ensure_seed_data(db: Session) -> None:
         )
     db.commit()
 
-    if db.query(Workshop).first():
-        return
+    if not db.query(Workshop).first():
+        _seed_bay_data(db)
+    _ensure_spare_idle_vats(db)
+    _ensure_reduction_cap_seed(db)
 
+
+def _seed_bay_data(db: Session) -> None:
     w1 = Workshop(name="蓝靛湾一号坊", region="黔东南", notes="晨露还原较快")
     w2 = Workshop(name="清水江二号坊", region="黔南", notes="缸体较深，保温好")
     db.add_all([w1, w2])
@@ -138,6 +142,54 @@ def ensure_seed_data(db: Session) -> None:
                 (20, "33.00", "-505.00"),
                 (10, "38.50", "-530.00"),
             ],
+        )
+    )
+    db.commit()
+
+
+def _ensure_spare_idle_vats(db: Session) -> None:
+    """蓝靛湾一号坊·土靛 另备闲置缸（幂等，老库也补上）。
+
+    上限卡已占 1 口（V-01 还原中），这两口闲置缸用于演示/验证：
+    名额为 0 时改还原中被拒；把上限调到 2 后两口同时改时至多一笔成功。
+    """
+    w1 = db.query(Workshop).filter_by(name="蓝靛湾一号坊").first()
+    if w1 is None:
+        return
+    for code, volume in (("V-03", "700.00"), ("V-04", "650.00")):
+        exists = db.query(Vat).filter_by(workshop_id=w1.id, code=code).first()
+        if not exists:
+            db.add(
+                Vat(
+                    workshop_id=w1.id,
+                    code=code,
+                    dyeType="土靛",
+                    volumeL=Decimal(volume),
+                    status=Vat.STATUS_IDLE,
+                )
+            )
+    db.commit()
+
+
+def _ensure_reduction_cap_seed(db: Session) -> None:
+    """并发上限卡种子（幂等）：蓝靛湾一号坊·土靛 最多 1 口还原中。"""
+    w1 = db.query(Workshop).filter_by(name="蓝靛湾一号坊").first()
+    if w1 is None:
+        return
+    exists = (
+        db.query(ReductionCap)
+        .filter_by(workshop_id=w1.id, dyeType="土靛")
+        .first()
+    )
+    if exists:
+        return
+    db.add(
+        ReductionCap(
+            workshop_id=w1.id,
+            dyeType="土靛",
+            maxReducing=1,
+            effectiveFrom=date.today(),
+            enabled=True,
         )
     )
     db.commit()
