@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 import json
@@ -7,12 +7,17 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from jinja2.utils import markupsafe
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload
 
 from app.auth import get_current_user
 from app.db import get_db
-from app.models import DipLot, Vat, Workshop
-from app.services.vat_rules import VatRuleError, validate_vat_status_change
+from app.models import DipLot, ReducingLimitCard, Vat, Workshop
+from app.services.vat_rules import (
+    VatRuleError,
+    count_reducing,
+    validate_vat_status_change,
+)
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -86,6 +91,29 @@ def _vat_payload(vat: Vat) -> dict:
     }
 
 
+def _limit_summaries(db: Session) -> list[dict]:
+    """生效中启用卡的占用摘要，与改状态判定同一计数来源（count_reducing）。"""
+    cards = (
+        db.query(ReducingLimitCard)
+        .options(joinedload(ReducingLimitCard.workshop))
+        .filter(
+            ReducingLimitCard.enabled.is_(True),
+            ReducingLimitCard.effectiveFrom <= date.today(),
+        )
+        .order_by(ReducingLimitCard.workshop_id, ReducingLimitCard.dyeType)
+        .all()
+    )
+    return [
+        {
+            "workshopName": c.workshop.name if c.workshop else "",
+            "dyeType": c.dyeType,
+            "used": count_reducing(db, c.workshop_id, c.dyeType),
+            "max": c.maxReducing,
+        }
+        for c in cards
+    ]
+
+
 def _bay_context(
     request: Request,
     db: Session,
@@ -107,6 +135,7 @@ def _bay_context(
         "user": user,
         "workshops": [{"id": w.id, "name": w.name, "region": w.region} for w in workshops],
         "vats": [_vat_payload(v) for v in vats],
+        "limit_summaries": _limit_summaries(db),
         "filter_workshop": workshop_id,
         "selected_vat": selected_vat,
         "error": error,
@@ -151,7 +180,7 @@ async def bay_vat_status(
     error = None
     try:
         latest = item.latest_lot()
-        validate_vat_status_change(item, status, latest)
+        validate_vat_status_change(db, item, status, latest)
         item.status = status
         db.commit()
         return RedirectResponse(f"/?vat={pk}" + (f"&workshop={ws}" if ws else ""), status_code=303)
@@ -201,6 +230,195 @@ async def bay_log_lot(
         request,
         "bay.html",
         _bay_context(request, db, user, ws, pk, error),
+        status_code=400,
+    )
+
+
+def _limits_context(
+    request: Request,
+    db: Session,
+    user,
+    error: Optional[str] = None,
+):
+    cards = (
+        db.query(ReducingLimitCard)
+        .options(joinedload(ReducingLimitCard.workshop))
+        .order_by(ReducingLimitCard.workshop_id, ReducingLimitCard.dyeType, ReducingLimitCard.id)
+        .all()
+    )
+    workshops = db.query(Workshop).order_by(Workshop.name).all()
+    return {
+        "request": request,
+        "user": user,
+        "cards": [
+            {
+                "id": c.id,
+                "workshopId": c.workshop_id,
+                "workshopName": c.workshop.name if c.workshop else "",
+                "dyeType": c.dyeType,
+                "maxReducing": c.maxReducing,
+                "effectiveFrom": c.effectiveFrom.isoformat(),
+                "enabled": c.enabled,
+                # 与改状态判定同一计数来源
+                "used": count_reducing(db, c.workshop_id, c.dyeType),
+            }
+            for c in cards
+        ],
+        "workshops": [{"id": w.id, "name": w.name} for w in workshops],
+        "today": date.today().isoformat(),
+        "error": error,
+        "active": "limits",
+    }
+
+
+def _enabled_card_clash(db: Session, workshop_id: int, dye_type: str, exclude_id: Optional[int] = None):
+    """同坊同染种是否已有（另一张）启用卡。"""
+    q = db.query(ReducingLimitCard).filter(
+        ReducingLimitCard.workshop_id == workshop_id,
+        ReducingLimitCard.dyeType == dye_type,
+        ReducingLimitCard.enabled.is_(True),
+    )
+    if exclude_id is not None:
+        q = q.filter(ReducingLimitCard.id != exclude_id)
+    return q.first()
+
+
+def _parse_card_fields(dye_type: str, max_reducing: str, effective_from: str):
+    dye = dye_type.strip()
+    if not dye:
+        raise VatRuleError("染种名不能为空。")
+    try:
+        max_n = int(max_reducing)
+    except ValueError:
+        raise VatRuleError("最大还原中缸数须为整数。")
+    if max_n < 0:
+        raise VatRuleError("最大还原中缸数不能为负数。")
+    try:
+        eff = date.fromisoformat(effective_from)
+    except ValueError:
+        raise VatRuleError("生效日起格式应为 YYYY-MM-DD。")
+    return dye, max_n, eff
+
+
+@router.get("/limits", response_class=HTMLResponse)
+async def limits_page(request: Request, db: Session = Depends(get_db)):
+    user = _need_login(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    return render(request, "limits.html", _limits_context(request, db, user))
+
+
+@router.post("/limits", response_class=HTMLResponse)
+async def limits_create(
+    request: Request,
+    workshop_id: int = Form(...),
+    dyeType: str = Form(...),
+    maxReducing: str = Form(...),
+    effectiveFrom: str = Form(...),
+    enabled: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    user = _need_login(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    enabled_flag = enabled.lower() in ("on", "1", "true", "yes")
+    error = None
+    dye = dyeType.strip()
+    try:
+        if not db.get(Workshop, workshop_id):
+            raise VatRuleError("所选工坊不存在。")
+        dye, max_n, eff = _parse_card_fields(dyeType, maxReducing, effectiveFrom)
+        if enabled_flag and _enabled_card_clash(db, workshop_id, dye):
+            raise VatRuleError(
+                f"该工坊「{dye}」已存在启用中的上限卡，同坊同染种同时只许一张启用卡。"
+            )
+        db.add(
+            ReducingLimitCard(
+                workshop_id=workshop_id,
+                dyeType=dye,
+                maxReducing=max_n,
+                effectiveFrom=eff,
+                enabled=enabled_flag,
+            )
+        )
+        db.commit()
+        return RedirectResponse("/limits", status_code=303)
+    except VatRuleError as exc:
+        error = exc.message
+        db.rollback()
+    except IntegrityError:
+        db.rollback()
+        error = f"该工坊「{dye}」已存在启用中的上限卡，同坊同染种同时只许一张启用卡。"
+    return render(
+        request,
+        "limits.html",
+        _limits_context(request, db, user, error=error),
+        status_code=400,
+    )
+
+
+@router.post("/limits/{card_id}/toggle", response_class=HTMLResponse)
+async def limits_toggle(card_id: int, request: Request, db: Session = Depends(get_db)):
+    user = _need_login(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    card = db.get(ReducingLimitCard, card_id)
+    if not card:
+        return RedirectResponse("/limits", status_code=303)
+    error = None
+    try:
+        if card.enabled:
+            card.enabled = False
+        else:
+            if _enabled_card_clash(db, card.workshop_id, card.dyeType, exclude_id=card.id):
+                raise VatRuleError(
+                    f"该工坊「{card.dyeType}」已存在启用中的上限卡，同坊同染种同时只许一张启用卡。"
+                )
+            card.enabled = True
+        db.commit()
+        return RedirectResponse("/limits", status_code=303)
+    except VatRuleError as exc:
+        error = exc.message
+        db.rollback()
+    except IntegrityError:
+        db.rollback()
+        error = f"该工坊「{card.dyeType}」已存在启用中的上限卡，同坊同染种同时只许一张启用卡。"
+    return render(
+        request,
+        "limits.html",
+        _limits_context(request, db, user, error=error),
+        status_code=400,
+    )
+
+
+@router.post("/limits/{card_id}", response_class=HTMLResponse)
+async def limits_update(
+    card_id: int,
+    request: Request,
+    maxReducing: str = Form(...),
+    effectiveFrom: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    user = _need_login(request, db)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    card = db.get(ReducingLimitCard, card_id)
+    if not card:
+        return RedirectResponse("/limits", status_code=303)
+    error = None
+    try:
+        _, max_n, eff = _parse_card_fields(card.dyeType, maxReducing, effectiveFrom)
+        card.maxReducing = max_n
+        card.effectiveFrom = eff
+        db.commit()
+        return RedirectResponse("/limits", status_code=303)
+    except VatRuleError as exc:
+        error = exc.message
+        db.rollback()
+    return render(
+        request,
+        "limits.html",
+        _limits_context(request, db, user, error=error),
         status_code=400,
     )
 

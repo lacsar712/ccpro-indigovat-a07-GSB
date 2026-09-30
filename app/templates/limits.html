@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}并发上限{% endblock %}
+{% block content %}
+<style>
+  .limits-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  .limits-table th, .limits-table td {
+    padding: 0.5rem 0.55rem;
+    border-bottom: 1px solid #c5d8d6;
+    text-align: left;
+    vertical-align: middle;
+  }
+  .limits-table th { color: #1f4d6b; font-weight: 600; white-space: nowrap; }
+  .limits-table td { color: #2a4554; }
+  .limits-table tr.card-off td { opacity: 0.55; }
+  .occ-pill {
+    display: inline-block;
+    padding: 0.1rem 0.6rem;
+    border-radius: 999px;
+    background: rgba(47, 111, 154, 0.14);
+    color: #1f4d6b;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .occ-pill.full { background: #fde8e8; color: #8b1e1e; }
+  .badge-on, .badge-off {
+    display: inline-block;
+    padding: 0.1rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+  }
+  .badge-on { background: rgba(26, 122, 92, 0.15); color: var(--ready); }
+  .badge-off { background: rgba(107, 124, 133, 0.18); color: #52636b; }
+  .inline-form { display: flex; gap: 0.4rem; align-items: center; margin: 0; }
+  .inline-form input {
+    margin: 0;
+    padding: 0.25rem 0.45rem;
+    font-size: 0.85rem;
+    background: #fff;
+    border-color: #b7cdd0;
+  }
+  .inline-form input[type="number"] { width: 5.2rem; }
+  .inline-form input[type="date"] { width: 9.5rem; }
+  .inline-form button, .toggle-form button {
+    width: auto;
+    margin: 0;
+    padding: 0.28rem 0.7rem;
+    font-size: 0.82rem;
+    background: var(--indigo-mid);
+    border-color: var(--indigo-mid);
+    white-space: nowrap;
+  }
+  .toggle-form { margin: 0; }
+  .toggle-form button.off {
+    background: transparent;
+    color: var(--indigo-mid);
+  }
+  .card-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+  .create-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.75rem 1rem;
+    align-items: end;
+  }
+  .create-grid .check-row { display: flex; align-items: center; gap: 0.45rem; padding-bottom: 0.55rem; }
+  .create-grid .check-row input { margin: 0; width: auto; }
+  .create-grid button[type="submit"] { width: auto; }
+</style>
+
+<div class="panel" style="margin-bottom:1.1rem">
+  <h2>新建上限卡</h2>
+  <p class="hint">按工坊 + 染种限制同时处于「还原中」的缸数；同坊同染种同时只许一张启用卡。</p>
+  {% if error %}
+  <div class="error-box">{{ error }}</div>
+  {% endif %}
+  <form method="post" action="/limits">
+    <div class="create-grid">
+      <label>工坊
+        <select name="workshop_id" required>
+          {% for w in workshops %}
+          <option value="{{ w.id }}">{{ w.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>染种名
+        <input type="text" name="dyeType" required maxlength="80" placeholder="例如 土靛">
+      </label>
+      <label>最大还原中缸数
+        <input type="number" name="maxReducing" min="0" step="1" value="1" required>
+      </label>
+      <label>生效日起
+        <input type="date" name="effectiveFrom" value="{{ today }}" required>
+      </label>
+      <label class="check-row">
+        <input type="checkbox" name="enabled" checked>
+        <span>是否启用</span>
+      </label>
+      <div>
+        <button type="submit">创建上限卡</button>
+      </div>
+    </div>
+  </form>
+</div>
+
+<div class="panel">
+  <h2>上限卡列表</h2>
+  <p class="hint">占用数与还原台 chip 摘要、闲置改还原中判定同源；改启用或改最大数后，下一笔改状态立即按新值判定。</p>
+  <table class="limits-table">
+    <thead>
+      <tr>
+        <th>工坊</th>
+        <th>染种名</th>
+        <th>还原中占用</th>
+        <th>生效日起</th>
+        <th>状态</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in cards %}
+      <tr class="{{ '' if c.enabled else 'card-off' }}">
+        <td>{{ c.workshopName }}</td>
+        <td>{{ c.dyeType }}</td>
+        <td>
+          <span class="occ-pill {{ 'full' if c.enabled and c.used >= c.maxReducing else '' }}">
+            {{ c.used }} / {{ c.maxReducing }}
+          </span>
+        </td>
+        <td>{{ c.effectiveFrom }}</td>
+        <td>
+          {% if c.enabled %}<span class="badge-on">启用</span>{% else %}<span class="badge-off">停用</span>{% endif %}
+        </td>
+        <td>
+          <div class="card-actions">
+            <form class="toggle-form" method="post" action="/limits/{{ c.id }}/toggle">
+              <button type="submit" class="{{ '' if c.enabled else 'off' }}">{{ '停用' if c.enabled else '启用' }}</button>
+            </form>
+            <form class="inline-form" method="post" action="/limits/{{ c.id }}">
+              <input type="number" name="maxReducing" min="0" step="1" value="{{ c.maxReducing }}" required aria-label="最大还原中缸数">
+              <input type="date" name="effectiveFrom" value="{{ c.effectiveFrom }}" required aria-label="生效日起">
+              <button type="submit">保存</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="color:#6b7c85">尚无上限卡，请先在上方新建。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="rule-foot" style="color:#4a6670;margin-top:0.9rem">
+    闲置改还原中前，按目标缸同坊同染种统计当前还原中缸数（可染色不计入）；无启用卡或已达上限即拒绝。
+  </p>
+</div>
+{% endblock %}

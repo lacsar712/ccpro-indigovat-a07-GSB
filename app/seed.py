@@ -1,12 +1,12 @@
 import hashlib
 import hmac
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.models import DipLot, User, Vat, Workshop
+from app.models import DipLot, ReducingLimitCard, User, Vat, Workshop
 
 _PWD_SALT = os.environ.get("PWD_SALT", "indigovat-dev-salt").encode("utf-8")
 
@@ -43,6 +43,7 @@ def ensure_seed_data(db: Session) -> None:
     db.commit()
 
     if db.query(Workshop).first():
+        _ensure_reducing_limit_seed(db)
         return
 
     w1 = Workshop(name="蓝靛湾一号坊", region="黔东南", notes="晨露还原较快")
@@ -140,4 +141,62 @@ def ensure_seed_data(db: Session) -> None:
             ],
         )
     )
+    db.commit()
+    _ensure_reducing_limit_seed(db)
+
+
+def _ensure_reducing_limit_seed(db: Session) -> None:
+    """幂等补齐并发上限演示数据（新老库都走这里）。
+
+    蓝靛湾一号坊 · 土靛：上限卡 max=1 且启用；V-01 已是还原中（占了一名额），
+    另备 V-03 同染种闲置缸，用于演示「名额已满拒绝 / 腾出后可入」。
+    """
+    w1 = db.query(Workshop).filter_by(name="蓝靛湾一号坊").first()
+    if w1 is None:
+        return
+
+    standby = db.query(Vat).filter_by(workshop_id=w1.id, code="V-03").first()
+    if standby is None:
+        standby = Vat(
+            workshop_id=w1.id,
+            code="V-03",
+            dyeType="土靛",
+            volumeL=Decimal("700.00"),
+            status=Vat.STATUS_IDLE,
+        )
+        db.add(standby)
+        db.flush()
+        now = datetime.now(timezone.utc)
+        db.add_all(
+            [
+                DipLot(
+                    vat_id=standby.id,
+                    dippedAt=now - timedelta(hours=5),
+                    clothMeters=Decimal("9.00"),
+                    redoxMv=None,
+                ),
+                DipLot(
+                    vat_id=standby.id,
+                    dippedAt=now - timedelta(hours=1),
+                    clothMeters=Decimal("11.50"),
+                    redoxMv=None,
+                ),
+            ]
+        )
+
+    card = (
+        db.query(ReducingLimitCard)
+        .filter_by(workshop_id=w1.id, dyeType="土靛")
+        .first()
+    )
+    if card is None:
+        db.add(
+            ReducingLimitCard(
+                workshop_id=w1.id,
+                dyeType="土靛",
+                maxReducing=1,
+                effectiveFrom=date.today(),
+                enabled=True,
+            )
+        )
     db.commit()

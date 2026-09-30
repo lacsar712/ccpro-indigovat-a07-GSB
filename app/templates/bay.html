@@ -18,6 +18,14 @@
     </template>
   </div>
 
+  {% if limit_summaries %}
+  <div class="chips occ-chips" aria-label="还原中占用摘要">
+    {% for s in limit_summaries %}
+    <span class="chip occ {{ 'full' if s.used >= s.max else '' }}">{{ s.workshopName }} · {{ s.dyeType }}：还原中 {{ s.used }}/{{ s.max }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   {% if error %}
   <div class="error-box">{{ error }}</div>
   {% endif %}
@@ -130,7 +138,7 @@
     </template>
   </div>
 
-  <p class="rule-foot">工坊只作缸位筛选片；浸染与状态均在缸位展开区内完成，无独立表页。</p>
+  <p class="rule-foot">工坊只作缸位筛选片；浸染与状态均在缸位展开区内完成，无独立表页。闲置改还原中受并发上限卡约束（见顶栏「并发上限」），占用摘要与判定同源。</p>
 </div>
 
 <script>
